@@ -1,0 +1,4 @@
+# Cloudflare Workers/Pages 静态资源缓存策略（Vercel/GitHub Pages 忽略此文件）
+# 带内容哈希的构建产物可永久缓存
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable
