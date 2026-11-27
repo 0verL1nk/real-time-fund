@@ -328,6 +328,8 @@ export default function HomePage() {
   const setIsLogoutConfirmOpen = (v) => _ms({ isLogoutConfirmOpen: isFunction(v) ? v(_gs().isLogoutConfirmOpen) : v });
   const setPortfolioEarningsOpen = (v) =>
     _ms({ portfolioEarningsOpen: isFunction(v) ? v(_gs().portfolioEarningsOpen) : v });
+  const setPortfolioPenetrationOpen = (v) =>
+    _ms({ portfolioPenetrationOpen: isFunction(v) ? v(_gs().portfolioPenetrationOpen) : v });
   const setMobileFundDrawerOpen = (v) =>
     _ms({ mobileFundDrawerOpen: isFunction(v) ? v(_gs().mobileFundDrawerOpen) : v });
   const setTutorialDrawerOpen = (v) => _ms({ tutorialDrawerOpen: isFunction(v) ? v(_gs().tutorialDrawerOpen) : v });
@@ -2100,6 +2102,7 @@ export default function HomePage() {
     cancelScan,
     handleFilesUpload,
     handleFilesDrop,
+    processTextImport,
     toggleScannedCode,
     confirmScanImport
   } = useScanImport({
@@ -4432,6 +4435,7 @@ export default function HomePage() {
     handleScanPick: (e) => handleScanPick?.(e),
     handleRetryOcr: () => handleRetryOcr?.(),
     handleFilesDrop: (e) => handleFilesDrop?.(e),
+    processTextImport: (text) => processTextImport?.(text),
     toggleScannedCode: (code) => toggleScannedCode?.(code),
     confirmScanImport: (...args) => confirmScanImport?.(...args),
     // 辅助函数
@@ -4688,6 +4692,7 @@ export default function HomePage() {
                 onSync={() => user?.id && syncUserConfig(user.id)}
                 onOpenSettings={() => setSettingsOpen(true)}
                 onOpenPortfolioEarnings={() => setPortfolioEarningsOpen(true)}
+                onOpenPortfolioPenetration={() => setPortfolioPenetrationOpen(true)}
                 onOpenLogin={handleOpenLogin}
                 onLogout={handleLogout}
                 onLogoutConfirmOpenChange={setIsLogoutConfirmOpen}
@@ -5403,6 +5408,7 @@ export default function HomePage() {
           lastSyncDisplay={lastSyncTime ? dayjs(lastSyncTime).format('MM-DD HH:mm') : null}
           onLogin={handleOpenLogin}
           onMyEarnings={() => setPortfolioEarningsOpen(true)}
+          onPortfolioPenetration={() => setPortfolioPenetrationOpen(true)}
           onTutorial={() => {
             if (isMobile) {
               setTutorialDrawerOpen(true);

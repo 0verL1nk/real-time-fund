@@ -11,6 +11,7 @@ export default function MineTab({
   lastSyncDisplay,
   onLogin,
   onMyEarnings,
+  onPortfolioPenetration,
   onTutorial,
   onUpdateLog,
   onFeedback,
@@ -89,6 +90,12 @@ export default function MineTab({
         <li>
           <button type="button" className="mine-menu-row glass" onClick={onMyEarnings}>
             <span className="mine-menu-label">我的收益</span>
+            <ChevronRight className="mine-menu-chevron" aria-hidden strokeWidth={2} />
+          </button>
+        </li>
+        <li>
+          <button type="button" className="mine-menu-row glass" onClick={onPortfolioPenetration}>
+            <span className="mine-menu-label">持仓穿透</span>
             <ChevronRight className="mine-menu-chevron" aria-hidden strokeWidth={2} />
           </button>
         </li>

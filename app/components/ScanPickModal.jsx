@@ -14,8 +14,9 @@ function getDroppedImageFiles(dataTransfer) {
   return Array.from(dataTransfer.files).filter((f) => IMAGE_TYPES.includes(f.type));
 }
 
-export default function ScanPickModal({ onClose, onPick, onFilesDrop, isScanning }) {
+export default function ScanPickModal({ onClose, onPick, onFilesDrop, onTextImport, isScanning }) {
   const [isDragging, setIsDragging] = useState(false);
+  const [pastedText, setPastedText] = useState('');
   const user = useUserStore((s) => s.user);
 
   const { data: ocrUsage } = useQuery({
@@ -71,7 +72,7 @@ export default function ScanPickModal({ onClose, onPick, onFilesDrop, isScanning
       className="modal-overlay"
       role="dialog"
       aria-modal="true"
-      aria-label="选择持仓截图"
+      aria-label="导入持仓"
       onClick={onClose}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -86,7 +87,7 @@ export default function ScanPickModal({ onClose, onPick, onFilesDrop, isScanning
         style={{ width: 420, maxWidth: '90vw' }}
       >
         <div className="title" style={{ marginBottom: 12 }}>
-          <span>选择持仓截图</span>
+          <span>导入持仓</span>
           {remaining !== null && (
             <span className={`ocr-quota-badge${isExhausted ? ' exhausted' : isWarning ? ' warning' : ''}`}>
               今日剩余识别次数 {remaining}/{max}
@@ -94,8 +95,8 @@ export default function ScanPickModal({ onClose, onPick, onFilesDrop, isScanning
           )}
         </div>
         <div className="muted" style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 12 }}>
-          从相册选择一张或多张持仓截图，系统将自动识别其中的
-          <span style={{ color: 'var(--primary)' }}>基金代码（6位数字）</span>，并支持批量导入。
+          从相册选择一张或多张持仓截图，或直接粘贴支付宝 / 天天基金的持仓文本，系统将自动识别其中的
+          <span style={{ color: 'var(--primary)' }}>基金代码（6位数字）</span>与持仓金额，并支持批量导入。
         </div>
         <div
           className={`scan-pick-dropzone muted ${isDragging ? 'dragging' : ''}`}
@@ -125,10 +126,40 @@ export default function ScanPickModal({ onClose, onPick, onFilesDrop, isScanning
             {isDragging ? '松开即可导入' : '拖拽图片到此处，或点击选择'}
           </div>
         </div>
+        <textarea
+          value={pastedText}
+          onChange={(e) => setPastedText(e.target.value)}
+          rows={4}
+          maxLength={8000}
+          placeholder="也可以直接粘贴支付宝 / 天天基金的持仓页或导出账单文本，自动识别基金代码与持仓金额"
+          aria-label="粘贴持仓文本"
+          style={{
+            width: '100%',
+            marginBottom: 12,
+            padding: '10px 12px',
+            borderRadius: 10,
+            border: '1px solid var(--border)',
+            background: 'color-mix(in srgb, var(--card) 70%, transparent)',
+            color: 'var(--text)',
+            fontSize: 16,
+            lineHeight: 1.5,
+            resize: 'vertical',
+            outline: 'none'
+          }}
+        />
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button className="button secondary" onClick={onClose}>
             取消
           </button>
+          {onTextImport && (
+            <button
+              className="button secondary"
+              onClick={() => onTextImport(pastedText)}
+              disabled={isScanning || !pastedText.trim()}
+            >
+              粘贴导入
+            </button>
+          )}
           <button className="button" onClick={onPick} disabled={isScanning}>
             {isScanning ? '处理中…' : '选择图片'}
           </button>

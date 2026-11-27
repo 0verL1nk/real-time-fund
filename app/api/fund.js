@@ -1652,8 +1652,9 @@ export const fetchFundHoldings = async (code) => {
           const hc = String(s.GPDM || '').trim();
           const hn = String(s.GPJC || '').trim();
           const hw = s.JZBL ? `${s.JZBL}%` : '';
+          const industry = String(s.INDEXNAME || '').trim();
           if (hc || hn || hw) {
-            holdings.push({ code: hc, name: hn, weight: hw, change: null });
+            holdings.push({ code: hc, name: hn, weight: hw, change: null, industry });
           }
         }
         holdings = holdings.slice(0, 10);
@@ -2072,6 +2073,58 @@ export const fetchMarketIndices = async () => {
   }
 
   return list;
+};
+
+/**
+ * 拉取指数日 K 线（东方财富 JSONP），用于组合走势的基准对比。
+ * @param {string} secid - 市场.代码，如 1.000300（沪深300）/ 0.399006（创业板指）
+ * @param {string} beg - 起始日期 YYYYMMDD
+ * @param {string} end - 结束日期 YYYYMMDD
+ * @returns {Promise<Array<{date: string, close: number}>>}
+ */
+export const fetchIndexHistory = async (secid, beg, end) => {
+  if (!isString(secid) || !secid) return [];
+  if (typeof window === 'undefined' || typeof document === 'undefined') return [];
+
+  const callbackName = `em_kline_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&beg=${beg || '19900101'}&end=${end || nowInTz().format('YYYYMMDD')}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56&cb=${callbackName}`;
+
+  return new Promise((resolve) => {
+    const script = document.createElement('script');
+    let done = false;
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      delete window[callbackName];
+      if (document.body.contains(script)) document.body.removeChild(script);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve([]);
+    }, 12000);
+
+    window[callbackName] = (res) => {
+      const klines = res?.data?.klines;
+      const list = isArray(klines)
+        ? klines
+            .map((line) => {
+              const parts = String(line).split(',');
+              const close = Number(parts[2]);
+              return isString(parts[0]) && Number.isFinite(close) ? { date: parts[0], close } : null;
+            })
+            .filter(Boolean)
+        : [];
+      cleanup();
+      resolve(list);
+    };
+    script.src = url;
+    script.onerror = () => {
+      cleanup();
+      resolve([]);
+    };
+    document.body.appendChild(script);
+  });
 };
 
 export const fetchLatestRelease = async () => {

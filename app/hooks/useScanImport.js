@@ -364,6 +364,43 @@ export function useScanImport({
     processFiles(Array.from(event.target.files || []));
   };
 
+  /**
+   * 粘贴导入：支付宝/天天基金持仓页或账单复制出的文本，直接走同一套解析与确认流程。
+   */
+  const processTextImport = async (text) => {
+    if (!user?.id) {
+      sonnerToast.error('该功能需登录后使用');
+      return;
+    }
+    const trimmed = String(text || '').trim();
+    if (!trimmed) {
+      showToast('请先粘贴持仓或账单文本', 'info');
+      return;
+    }
+
+    setIsScanning(true);
+    setScanModalOpen(false);
+    abortScanRef.current = false;
+    setScanProgress({ stage: 'ocr', current: 0, total: 1 });
+
+    try {
+      setLastOcrTexts([trimmed]);
+      await processTextsInternal([trimmed]);
+    } catch (err) {
+      if (!abortScanRef.current) {
+        if (err?.code === 'DAILY_LIMIT_EXCEEDED') {
+          showToast(err.message || '今日识别次数已达上限', 'error');
+        } else {
+          console.error('Text Import Error:', err);
+          showToast('文本识别失败，请重试', 'error');
+        }
+      }
+    } finally {
+      setIsScanning(false);
+      setScanProgress({ stage: 'ocr', current: 0, total: 0 });
+    }
+  };
+
   const handleFilesDrop = (files) => {
     processFiles(files);
   };
@@ -654,6 +691,7 @@ export function useScanImport({
     cancelScan,
     handleFilesUpload,
     handleFilesDrop,
+    processTextImport,
     toggleScannedCode,
     confirmScanImport
   };
