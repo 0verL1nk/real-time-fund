@@ -1,0 +1,2 @@
+# 统一使用 LF，避免 Windows（core.autocrlf=true）检出 CRLF 导致 prettier/eslint 全量报错
+* text=auto eol=lf

@@ -1887,9 +1887,13 @@ function parseGlobalIndexRaw(data) {
   };
 }
 
+// 东证指数无 CORS 开放数据源，需自建边缘代理；未配置时跳过，避免控制台报错
+const TOPIX_PROXY_URL = process.env.NEXT_PUBLIC_TOPIX_PROXY_URL;
+
 const fetchTopixFromWorker = async () => {
+  if (!TOPIX_PROXY_URL) return null;
   try {
-    const res = await fetch('https://getgztpx.934585316.workers.dev/');
+    const res = await fetch(TOPIX_PROXY_URL);
     if (res.ok) {
       const json = await res.json();
       if (json?.success && json?.data) {

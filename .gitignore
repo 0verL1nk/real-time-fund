@@ -89,6 +89,9 @@ fabric.properties
 # Sentry Config File
 .env.sentry-build-plugin
 
+# Vercel 本地关联信息（由 vercel link 生成，含本机项目名）
+.vercel/
+
 # CLI
 cli/
 .agents/

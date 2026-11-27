@@ -2,6 +2,8 @@
   "name": "real-time-fund",
   "compatibility_date": "2026-02-21",
   "assets": {
-    "directory": "./out"
+    "directory": "./out",
+    // 与 vercel.json 的 SPA 回退保持一致
+    "not_found_handling": "single-page-application"
   }
 }
