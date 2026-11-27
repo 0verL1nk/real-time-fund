@@ -2569,11 +2569,12 @@ export default function HomePage() {
     }
   }, [isTradingDay, setDcaPlans]);
 
-  const { refreshing, refreshCycleStartRef, manualRefresh, refreshAll } = useRefreshManager({
-    scheduleDcaTrades,
-    processPendingQueue,
-    deviceConflictModalOpenRef
-  });
+  const { refreshing, refreshCycleStartRef, manualRefresh, refreshAll, marketPhase, effectiveRefreshMs, sourceStatus } =
+    useRefreshManager({
+      scheduleDcaTrades,
+      processPendingQueue,
+      deviceConflictModalOpenRef
+    });
   useEffect(() => {
     refreshAllRef.current = refreshAll;
   }, [refreshAll]);
@@ -4654,7 +4655,11 @@ export default function HomePage() {
                 </Tooltip>
               )}
               <RefreshButton
-                refreshMs={refreshMs}
+                refreshMs={effectiveRefreshMs}
+                configuredRefreshMs={refreshMs}
+                phaseLabel={marketPhase.label}
+                isLive={marketPhase.isLive}
+                sourceStatus={sourceStatus}
                 manualRefresh={manualRefresh}
                 refreshing={refreshing}
                 fundsLength={funds.length}

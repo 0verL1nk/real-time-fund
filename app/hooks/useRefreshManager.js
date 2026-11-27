@@ -5,17 +5,21 @@ import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
 import { isArray, isNumber, isPlainObject, isString } from 'lodash';
+import { toast as sonnerToast } from 'sonner';
 
 import { useStorageStore, storageStore, useUserStore } from '../stores';
 import { recordValuation, setValuationSeries as persistValuationSeries } from '../lib/valuationTimeseries';
 import { DAILY_EARNINGS_SCOPE_ALL } from '@/app/constants';
-import { asyncPool } from '../lib/asyncHelper';
+import { asyncPool, withTimeout } from '../lib/asyncHelper';
+import { useMarketPhase } from './useMarketPhase';
+import { getSourceHealth } from '../lib/sourceHealth.mjs';
 import {
   fetchFundData,
   fetchNetValueRangeFromTrend,
   fetchFundDividends,
   fetchFundConfirmDays,
-  fetchFundsBestSources
+  fetchFundsBestSources,
+  fetchNavMetricsFromTrendFallback
 } from '../api/fund';
 import { TZ } from '../lib/fundHelpers';
 import { getQueryClient } from '../lib/get-query-client';
@@ -50,6 +54,22 @@ export function useRefreshManager({ scheduleDcaTrades, processPendingQueue, devi
   const refreshingRef = useRef(false);
   const refreshCodesRef = useRef([]);
 
+  const refreshMs = useStorageStore((s) => s.refreshMs);
+  const { phase: marketPhase, effectiveRefreshMs } = useMarketPhase(refreshMs);
+  const [sourceStatus, setSourceStatus] = useState(() => getSourceHealth());
+  const prevDegradedRef = useRef(false);
+
+  // 数据源健康状态同步到 UI：仅在「健康 → 异常」时提示一次，避免每轮刷新重复弹 toast
+  const syncSourceStatus = useCallback(() => {
+    const snapshot = getSourceHealth();
+    if (snapshot.degraded && !prevDegradedRef.current) {
+      const names = snapshot.sources.filter((s) => s.status !== 'ok').map((s) => s.name);
+      sonnerToast.warning(`估值源异常，已自动切换备用源${names.length ? `：${names.join('、')}` : ''}`);
+    }
+    prevDegradedRef.current = snapshot.degraded;
+    setSourceStatus(snapshot);
+  }, []);
+
   const scheduleDcaTradesRef = useRef(scheduleDcaTrades);
   const processPendingQueueRef = useRef(processPendingQueue);
 
@@ -74,7 +94,7 @@ export function useRefreshManager({ scheduleDcaTrades, processPendingQueue, devi
         timerRef.current = setTimeout(() => {
           const nextCodes = refreshCodesRef.current || [];
           if (nextCodes.length) refreshAll(nextCodes);
-        }, store.refreshMs);
+        }, effectiveRefreshMs);
         return;
       }
 
@@ -252,11 +272,11 @@ export function useRefreshManager({ scheduleDcaTrades, processPendingQueue, devi
           console.error('批量获取自动数据源失败', e);
         }
 
-        await asyncPool(3, uniqueCodes, async (c) => {
+        await asyncPool(10, uniqueCodes, async (c) => {
           if (!fundCodeStillInStorage(c)) return;
           let data = null;
           try {
-            data = await fetchFundData(c, bestSourcesMap[c]);
+            data = await withTimeout(fetchFundData(c, bestSourcesMap[c]), 8000, `基金 ${c} 刷新超时`);
           } catch (e) {
             console.error(`刷新基金 ${c} 失败`, e);
             if (fundCodeStillInStorage(c)) {
@@ -281,6 +301,12 @@ export function useRefreshManager({ scheduleDcaTrades, processPendingQueue, devi
 
           const currentNavDate = isValidDateStr(data.jzrq) ? data.jzrq : null;
           const previousNavDate = isValidDateStr(oldData?.jzrq) ? oldData.jzrq : null;
+          // 净值日期未变时沿用上一轮的日涨幅/上一日净值，避免净值指标尚未就绪时短暂闪空
+          if (oldData && currentNavDate && previousNavDate && currentNavDate === previousNavDate) {
+            ['zzl', 'lastNav', 'yesterdayZzl', 'yesterdayNavDelta'].forEach((key) => {
+              if (data[key] == null && oldData[key] != null) data[key] = oldData[key];
+            });
+          }
           if (currentNavDate && previousNavDate && currentNavDate > previousNavDate) {
             data.navUpdatedAt = refreshDateStr;
           } else if (currentNavDate && previousNavDate === currentNavDate && oldData?.navUpdatedAt === refreshDateStr) {
@@ -290,17 +316,6 @@ export function useRefreshManager({ scheduleDcaTrades, processPendingQueue, devi
           }
 
           updated.push(data);
-
-          // 按需获取基金确认天数（仅在 localStorage 中无缓存时请求）
-          try {
-            const storedForConfirm = getStoredFundSnapshot(data.code);
-            if (storedForConfirm?.confirmDays == null) {
-              const days = await fetchFundConfirmDays(data.code);
-              if (days != null) data.confirmDays = days;
-            }
-          } catch (e) {
-            // 获取确认天数失败不影响主流程
-          }
 
           // 估值时序记录
           const storedFund = getStoredFundSnapshot(data.code);
@@ -320,6 +335,89 @@ export function useRefreshManager({ scheduleDcaTrades, processPendingQueue, devi
                 nextValuationSeries[data.code] = recorded;
                 valuationChanged = true;
               }
+            }
+          }
+        });
+
+        // UI 与存储同步
+        if (updated.length > 0) {
+          useStorageStore.getState().setFunds((prev) => {
+            const updatedMap = new Map(updated.map((x) => [x.code, x]));
+            let changed = false;
+            const next = prev.map((f) => {
+              const u = updatedMap.get(f.code);
+              if (!u) return f;
+              changed = true;
+              const merged = { ...u };
+              if (f.addedAt != null) merged.addedAt = f.addedAt;
+              if (f.addBaseNav != null) merged.addBaseNav = f.addBaseNav;
+              if (f.addBaseDate != null) merged.addBaseDate = f.addBaseDate;
+              if (f.dataSource != null) merged.dataSource = f.dataSource;
+              if (f.autoSource != null) merged.autoSource = f.autoSource;
+              if (f.showImageChart !== undefined) merged.showImageChart = f.showImageChart;
+              if (f.confirmDays != null) merged.confirmDays = f.confirmDays;
+              if (merged.addedAt == null || merged.addBaseNav == null || merged.addBaseDate == null) {
+                const snap = getAddBaseSnapshotFromFund(merged);
+                if (merged.addedAt == null) merged.addedAt = Date.now();
+                if (merged.addBaseNav == null && snap.nav != null) merged.addBaseNav = snap.nav;
+                if (merged.addBaseDate == null && snap.date) merged.addBaseDate = snap.date;
+              }
+              return merged;
+            });
+            return changed ? next : prev;
+          });
+          if (valuationChanged) {
+            useStorageStore.getState().setValuationSeries((prev) => {
+              const next = { ...prev };
+              Object.entries(nextValuationSeries).forEach(([code, list]) => {
+                next[code] = list;
+              });
+              return next;
+            });
+          }
+        }
+
+        // 阶段二：收益/分红补齐（依赖 pingzhongdata 大文件，慢且可延后，不阻塞估值展示）
+        const confirmDaysMap = {};
+        const metricsPatch = {};
+        await asyncPool(2, updated, async (data) => {
+          // 按需获取基金确认天数（仅在 localStorage 中无缓存时请求）
+          try {
+            const storedForConfirm = getStoredFundSnapshot(data.code);
+            if (storedForConfirm?.confirmDays == null) {
+              const days = await fetchFundConfirmDays(data.code);
+              if (days != null) confirmDaysMap[data.code] = days;
+            }
+          } catch (e) {
+            // 获取确认天数失败不影响主流程
+          }
+
+          // 净值指标（日涨幅/上一日净值）缺失时才加载 pingzhongdata：平时沿用上一轮的值，
+          // 只有净值日期变化或首次添加时才触发，且已不在首屏关键路径上
+          if (data.zzl == null) {
+            try {
+              const metrics = await fetchNavMetricsFromTrendFallback(data.code);
+              // 只有净值日期一致时才采用指标，避免把旧净值日的涨跌幅当成当日数据
+              const metricsMatchesNav = metrics && metrics.jzrq && (!data.jzrq || metrics.jzrq === data.jzrq);
+              if (metricsMatchesNav) {
+                if (!data.dwjz && metrics.dwjz) {
+                  data.dwjz = metrics.dwjz;
+                  data.jzrq = metrics.jzrq;
+                }
+                if (data.zzl == null) data.zzl = metrics.zzl;
+                if (data.lastNav == null) data.lastNav = metrics.lastNav;
+                if (data.yesterdayZzl == null) data.yesterdayZzl = metrics.yesterdayZzl;
+                if (data.yesterdayNavDelta == null) data.yesterdayNavDelta = metrics.yesterdayNavDelta;
+                metricsPatch[data.code] = {
+                  jzrq: data.jzrq,
+                  zzl: data.zzl,
+                  lastNav: data.lastNav,
+                  yesterdayZzl: data.yesterdayZzl,
+                  yesterdayNavDelta: data.yesterdayNavDelta
+                };
+              }
+            } catch (e) {
+              // 指标获取失败不影响估值展示
             }
           }
 
@@ -494,42 +592,39 @@ export function useRefreshManager({ scheduleDcaTrades, processPendingQueue, devi
           }
         });
 
-        // UI 与存储同步
-        if (updated.length > 0) {
+        if (Object.keys(metricsPatch).length > 0) {
           useStorageStore.getState().setFunds((prev) => {
-            const updatedMap = new Map(updated.map((x) => [x.code, x]));
             let changed = false;
             const next = prev.map((f) => {
-              const u = updatedMap.get(f.code);
-              if (!u) return f;
-              changed = true;
-              const merged = { ...u };
-              if (f.addedAt != null) merged.addedAt = f.addedAt;
-              if (f.addBaseNav != null) merged.addBaseNav = f.addBaseNav;
-              if (f.addBaseDate != null) merged.addBaseDate = f.addBaseDate;
-              if (f.dataSource != null) merged.dataSource = f.dataSource;
-              if (f.autoSource != null) merged.autoSource = f.autoSource;
-              if (f.showImageChart !== undefined) merged.showImageChart = f.showImageChart;
-              if (f.confirmDays != null) merged.confirmDays = f.confirmDays;
-              if (merged.addedAt == null || merged.addBaseNav == null || merged.addBaseDate == null) {
-                const snap = getAddBaseSnapshotFromFund(merged);
-                if (merged.addedAt == null) merged.addedAt = Date.now();
-                if (merged.addBaseNav == null && snap.nav != null) merged.addBaseNav = snap.nav;
-                if (merged.addBaseDate == null && snap.date) merged.addBaseDate = snap.date;
+              const patch = metricsPatch[f.code];
+              if (!patch || (patch.jzrq && f.jzrq && patch.jzrq !== f.jzrq)) return f;
+              const merged = { ...f };
+              let dirty = false;
+              for (const key of ['zzl', 'lastNav', 'yesterdayZzl', 'yesterdayNavDelta']) {
+                if (merged[key] == null && patch[key] != null) {
+                  merged[key] = patch[key];
+                  dirty = true;
+                }
               }
+              if (!dirty) return f;
+              changed = true;
               return merged;
             });
             return changed ? next : prev;
           });
-          if (valuationChanged) {
-            useStorageStore.getState().setValuationSeries((prev) => {
-              const next = { ...prev };
-              Object.entries(nextValuationSeries).forEach(([code, list]) => {
-                next[code] = list;
-              });
-              return next;
+        }
+
+        if (Object.keys(confirmDaysMap).length > 0) {
+          useStorageStore.getState().setFunds((prev) => {
+            let changed = false;
+            const next = prev.map((f) => {
+              const days = confirmDaysMap[f.code];
+              if (days == null || f.confirmDays === days) return f;
+              changed = true;
+              return { ...f, confirmDays: days };
             });
-          }
+            return changed ? next : prev;
+          });
         }
 
         if (earningsChanged) {
@@ -554,14 +649,18 @@ export function useRefreshManager({ scheduleDcaTrades, processPendingQueue, devi
       } catch (e) {
         console.error('刷新过程出错', e);
       } finally {
-        const currentRefreshMs = useStorageStore.getState().refreshMs;
+        const currentRefreshMs = effectiveRefreshMs;
         refreshingRef.current = false;
         setRefreshing(false);
         refreshCycleStartRef.current = Date.now();
+        syncSourceStatus();
         if (timerRef.current) clearTimeout(timerRef.current);
         timerRef.current = setTimeout(() => {
           const codes = refreshCodesRef.current || [];
-          if (codes.length) refreshAll(codes);
+          if (!codes.length) return;
+          // 页面在后台时不发请求；回到前台由 visibilitychange 立即补刷
+          if (typeof document !== 'undefined' && document.hidden) return;
+          refreshAll(codes);
         }, currentRefreshMs);
 
         try {
@@ -585,7 +684,7 @@ export function useRefreshManager({ scheduleDcaTrades, processPendingQueue, devi
         }
       }
     },
-    [deviceConflictModalOpenRef]
+    [deviceConflictModalOpenRef, effectiveRefreshMs, syncSourceStatus]
   );
 
   const manualRefresh = useCallback(async () => {
@@ -596,8 +695,7 @@ export function useRefreshManager({ scheduleDcaTrades, processPendingQueue, devi
     await refreshAll(codes);
   }, [refreshAll]);
 
-  // 定时刷新 effect
-  const refreshMs = useStorageStore((s) => s.refreshMs);
+  // 定时刷新 effect（间隔随交易时段自动调整）
   useEffect(() => {
     refreshCycleStartRef.current = Date.now();
 
@@ -605,12 +703,16 @@ export function useRefreshManager({ scheduleDcaTrades, processPendingQueue, devi
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
         const codes = refreshCodesRef.current || [];
-        if (codes.length) {
-          refreshAll(codes);
-        } else {
+        if (!codes.length) {
           tick();
+          return;
         }
-      }, refreshMs);
+        if (typeof document !== 'undefined' && document.hidden) {
+          tick();
+          return;
+        }
+        refreshAll(codes);
+      }, effectiveRefreshMs);
     };
 
     tick();
@@ -618,7 +720,30 @@ export function useRefreshManager({ scheduleDcaTrades, processPendingQueue, devi
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [refreshMs, refreshAll]);
+  }, [effectiveRefreshMs, refreshAll]);
 
-  return { refreshing, refreshCycleStartRef, manualRefresh, refreshAll };
+  // 切回前台：若已超过一个刷新周期则立即补刷，否则恢复剩余倒计时
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible' || refreshingRef.current) return;
+      const codes = refreshCodesRef.current || [];
+      if (!codes.length) return;
+      const elapsed = Date.now() - refreshCycleStartRef.current;
+      const remain = effectiveRefreshMs - elapsed;
+      if (timerRef.current) clearTimeout(timerRef.current);
+      if (remain <= 0) {
+        refreshAll(codes);
+      } else {
+        timerRef.current = setTimeout(() => {
+          const nextCodes = refreshCodesRef.current || [];
+          if (nextCodes.length) refreshAll(nextCodes);
+        }, remain);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [effectiveRefreshMs, refreshAll]);
+
+  return { refreshing, refreshCycleStartRef, manualRefresh, refreshAll, marketPhase, effectiveRefreshMs, sourceStatus };
 }

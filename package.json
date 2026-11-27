@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
+    "selfcheck": "node scripts/selfcheck.mjs",
     "prepare": "husky"
   },
   "dependencies": {
