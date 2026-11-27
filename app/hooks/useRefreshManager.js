@@ -86,8 +86,6 @@ export function useRefreshManager({ scheduleDcaTrades, processPendingQueue, devi
 
   const refreshAll = useCallback(
     async (codes) => {
-      const store = useStorageStore.getState();
-
       // 如果弹窗拦截同步中，则不允许执行数据刷新，但保持心跳循环
       if (deviceConflictModalOpenRef.current) {
         if (timerRef.current) clearTimeout(timerRef.current);
