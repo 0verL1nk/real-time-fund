@@ -18,6 +18,7 @@ import { storageStore, useUserStore, useStorageStore } from '@/app/stores';
 import { searchFunds } from '@/app/api/fund';
 import { CloseIcon } from './Icons';
 import FitText from './FitText';
+import PortfolioTrendPanel from './PortfolioTrendPanel';
 
 dayjs.locale('zh-cn');
 
@@ -420,7 +421,13 @@ export default function MyEarningsCalendarPage({ open, onOpenChange, series = []
   const yearSum = monthTotalsForYear.reduce((a, b) => a + b, 0);
 
   const headerTitle =
-    viewTab === 'day' ? cursorMonth.format('YYYY年M月') : viewTab === 'month' ? `${cursorYear}年` : '历年收益';
+    viewTab === 'day'
+      ? cursorMonth.format('YYYY年M月')
+      : viewTab === 'month'
+        ? `${cursorYear}年`
+        : viewTab === 'trend'
+          ? '组合走势'
+          : '历年收益';
 
   const now = dayjs();
   const nextPeriodDisabled =
@@ -447,10 +454,10 @@ export default function MyEarningsCalendarPage({ open, onOpenChange, series = []
           <div
             className={cn(
               'my-earnings-title-row my-earnings-period-row',
-              viewTab === 'year' && 'my-earnings-period-row-single'
+              (viewTab === 'year' || viewTab === 'trend') && 'my-earnings-period-row-single'
             )}
           >
-            {viewTab === 'year' ? (
+            {viewTab === 'year' || viewTab === 'trend' ? (
               <span className="my-earnings-context-title">{headerTitle}</span>
             ) : (
               <>
@@ -509,7 +516,8 @@ export default function MyEarningsCalendarPage({ open, onOpenChange, series = []
               {[
                 { id: 'day', label: '日' },
                 { id: 'month', label: '月' },
-                { id: 'year', label: '年' }
+                { id: 'year', label: '年' },
+                { id: 'trend', label: '走势' }
               ].map((t) => (
                 <button
                   key={t.id}
@@ -526,7 +534,10 @@ export default function MyEarningsCalendarPage({ open, onOpenChange, series = []
                 </button>
               ))}
 
-              <div className="w-[1px] h-3.5 mx-0.5 shrink-0 bg-[var(--border)] opacity-60 rounded-full" />
+              <div
+                className="w-[1px] h-3.5 mx-0.5 shrink-0 bg-[var(--border)] opacity-60 rounded-full"
+                style={{ display: viewTab === 'trend' ? 'none' : undefined }}
+              />
 
               {[
                 { id: 'amount', label: '金额' },
@@ -540,6 +551,7 @@ export default function MyEarningsCalendarPage({ open, onOpenChange, series = []
                     type="button"
                     className={`trend-range-btn ${isActive && !disabled ? 'active' : ''} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
                     disabled={disabled}
+                    style={{ display: viewTab === 'trend' ? 'none' : undefined }}
                     onClick={(e) => {
                       e.stopPropagation();
                       if (!disabled) {
@@ -586,6 +598,12 @@ export default function MyEarningsCalendarPage({ open, onOpenChange, series = []
                   <div className="my-earnings-detail-desc">上滑列表查看各年收益合计</div>
                 </>
               )}
+              {viewTab === 'trend' && (
+                <>
+                  <div className="my-earnings-detail-label">组合累计收益率</div>
+                  <div className="my-earnings-detail-desc">对比沪深300 / 创业板指，基准按同一区间归零</div>
+                </>
+              )}
             </div>
 
             <motion.div
@@ -596,7 +614,8 @@ export default function MyEarningsCalendarPage({ open, onOpenChange, series = []
               dragMomentum={false}
               onDragEnd={enableSwipe ? onDragEnd : undefined}
             >
-              <div className="my-earnings-calendar-card">
+              {viewTab === 'trend' && <PortfolioTrendPanel series={series} />}
+              <div className="my-earnings-calendar-card" style={{ display: viewTab === 'trend' ? 'none' : undefined }}>
                 {viewTab === 'day' && (
                   <>
                     <Calendar

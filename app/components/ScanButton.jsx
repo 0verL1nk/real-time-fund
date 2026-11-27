@@ -11,6 +11,7 @@ export default function ScanButton({ onClick, disabled }) {
           className="icon-button"
           onClick={onClick}
           disabled={disabled}
+          aria-label="导入持仓"
           style={{
             opacity: disabled ? 0.5 : 1,
             cursor: disabled ? 'wait' : 'pointer',
@@ -36,7 +37,7 @@ export default function ScanButton({ onClick, disabled }) {
         </button>
       </TooltipTrigger>
       <TooltipContent>
-        <p>拍照/上传图片识别基金代码</p>
+        <p>截图识别或粘贴持仓文本导入</p>
       </TooltipContent>
     </Tooltip>
   );

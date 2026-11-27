@@ -22,6 +22,7 @@ const ScanPickModal = dynamic(() => import('./ScanPickModal'), { ssr: false });
 const ScanProgressModal = dynamic(() => import('./ScanProgressModal'), { ssr: false });
 const AddHistoryModal = dynamic(() => import('./AddHistoryModal'), { ssr: false });
 const AllSectorsModal = dynamic(() => import('./AllSectorsModal'), { ssr: false });
+const PortfolioPenetrationPage = dynamic(() => import('./PortfolioPenetrationPage'), { ssr: false });
 const DividendMethodModal = dynamic(() => import('./DividendMethodModal'), { ssr: false });
 
 // 高频组件：同步加载
@@ -88,6 +89,7 @@ function ModalsLayerContent({ callbacksRef }) {
   const tutorialDrawerOpen = useModalStore((s) => s.tutorialDrawerOpen);
   const updateLogOpen = useModalStore((s) => s.updateLogOpen);
   const portfolioEarningsOpen = useModalStore((s) => s.portfolioEarningsOpen);
+  const portfolioPenetrationOpen = useModalStore((s) => s.portfolioPenetrationOpen);
   const mobileFundDrawerOpen = useModalStore((s) => s.mobileFundDrawerOpen);
   const mobileTableSettingModalOpen = useModalStore((s) => s.mobileTableSettingModalOpen);
   const sortSettingOpen = useModalStore((s) => s.sortSettingOpen);
@@ -150,6 +152,8 @@ function ModalsLayerContent({ callbacksRef }) {
   const setAddFundToGroupOpen = (v) => _ms({ addFundToGroupOpen: isFunction(v) ? v(_gs().addFundToGroupOpen) : v });
   const setPortfolioEarningsOpen = (v) =>
     _ms({ portfolioEarningsOpen: isFunction(v) ? v(_gs().portfolioEarningsOpen) : v });
+  const setPortfolioPenetrationOpen = (v) =>
+    _ms({ portfolioPenetrationOpen: isFunction(v) ? v(_gs().portfolioPenetrationOpen) : v });
   const setSuccessModal = (v) => _ms({ successModal: isFunction(v) ? v(_gs().successModal) : v });
   const setCloudConfigModal = (v) => _ms({ cloudConfigModal: isFunction(v) ? v(_gs().cloudConfigModal) : v });
   const setDeviceConflictModal = (v) => _ms({ deviceConflictModal: isFunction(v) ? v(_gs().deviceConflictModal) : v });
@@ -294,6 +298,13 @@ function ModalsLayerContent({ callbacksRef }) {
         onGoHome={() => {
           setPortfolioEarningsOpen(false);
         }}
+      />
+
+      {/* ===== Modal: 持仓穿透 ===== */}
+      <PortfolioPenetrationPage
+        open={portfolioPenetrationOpen}
+        onOpenChange={setPortfolioPenetrationOpen}
+        masked={cb.current.maskAmounts}
       />
 
       {/* ===== Modal: 微信 ===== */}
@@ -882,6 +893,7 @@ function ModalsLayerContent({ callbacksRef }) {
             onClose={() => setScanModalOpen(false)}
             onPick={cb.current.handleScanPick}
             onFilesDrop={cb.current.handleFilesDrop}
+            onTextImport={cb.current.processTextImport}
             isScanning={isScanning}
           />
         )}

@@ -7,7 +7,7 @@ import Image from 'next/image';
 import { AnimatePresence, motion } from 'framer-motion';
 import ConfirmModal from './ConfirmModal';
 import { HelpCircle } from 'lucide-react';
-import { CalendarIcon, LoginIcon, LogoutIcon, SettingsIcon, UserIcon, ListIcon } from './Icons';
+import { CalendarIcon, LoginIcon, LogoutIcon, SettingsIcon, UserIcon, ListIcon, GridIcon } from './Icons';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 
 export default function UserMenu({
@@ -19,6 +19,7 @@ export default function UserMenu({
   onSync,
   onOpenSettings,
   onOpenPortfolioEarnings,
+  onOpenPortfolioPenetration,
   onOpenLogin,
   onLogout,
   onLogoutConfirmOpenChange,
@@ -139,6 +140,16 @@ export default function UserMenu({
                         className="user-menu-item"
                         onClick={() => {
                           setUserMenuOpen(false);
+                          onOpenPortfolioPenetration?.();
+                        }}
+                      >
+                        <GridIcon width="16" height="16" />
+                        <span>持仓穿透</span>
+                      </button>
+                      <button
+                        className="user-menu-item"
+                        onClick={() => {
+                          setUserMenuOpen(false);
                           onTutorial?.();
                         }}
                       >
@@ -251,6 +262,16 @@ export default function UserMenu({
                       >
                         <CalendarIcon width="16" height="16" />
                         <span>我的收益</span>
+                      </button>
+                      <button
+                        className="user-menu-item"
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          onOpenPortfolioPenetration?.();
+                        }}
+                      >
+                        <GridIcon width="16" height="16" />
+                        <span>持仓穿透</span>
                       </button>
                       <button
                         className="user-menu-item"
