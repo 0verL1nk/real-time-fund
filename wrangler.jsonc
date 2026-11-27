@@ -1,8 +1,11 @@
 {
   "name": "real-time-fund",
+  "main": "workers/edge-api.js",
   "compatibility_date": "2026-02-21",
   "assets": {
     "directory": "./out",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"],
     // 与 vercel.json 的 SPA 回退保持一致
     "not_found_handling": "single-page-application"
   }

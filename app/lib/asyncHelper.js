@@ -15,6 +15,22 @@ export async function asyncPool(concurrency, iterable, iteratorFn) {
 }
 
 /**
+ * 为 Promise 加超时上限；超时后 reject，原 Promise 继续执行（其结果仍会写入各自缓存）。
+ * @param {Promise<any>} promise
+ * @param {number} ms
+ * @param {string} [message]
+ * @returns {Promise<any>}
+ */
+export function withTimeout(promise, ms, message = '请求超时') {
+  if (!Number.isFinite(ms) || ms <= 0) return promise;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
  * 通用异步重试工具
  * @param {Function} fn - 返回 Promise 的异步函数
  * @param {number} [retries=3] - 重试次数

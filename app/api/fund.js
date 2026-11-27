@@ -3,11 +3,13 @@ import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
 import { isArray, isNil, isNumber, isObject, isString } from 'lodash';
 import { storageStore } from '../stores';
-import { withRetry } from '../lib/asyncHelper';
+import { withRetry, withTimeout } from '../lib/asyncHelper';
 import { getQueryClient } from '../lib/get-query-client';
 import * as qk from '../lib/query-keys';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import { isTradingDay } from '../lib/tradingCalendar';
+import { reportSourceFailure, reportSourceSuccess, isSourceCoolingDown } from '../lib/sourceHealth.mjs';
+import { edgeProxyUrl, markEdgeProxyDown } from '../lib/edgeProxy.mjs';
 
 import { DEFAULT_TZ, ONE_DAY_MS } from '@/app/constants';
 
@@ -947,9 +949,22 @@ const processFundValuationLastQueue = async () => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), FUND_VALUATION_LAST_TIMEOUT_MS);
       try {
-        const url = `https://fundcomapi.tiantianfunds.com/mm/newCore/FundValuationLast?FCODES=${encodeURIComponent(chunk.join(','))}&FIELDS=${encodeURIComponent(FUND_VALUATION_LAST_FIELDS)}`;
-        fundDebugLog('processFundValuationLastQueue', { count: chunk.length, codes: chunk });
-        const res = await fetch(url, { signal: controller.signal });
+        const directUrl = `https://fundcomapi.tiantianfunds.com/mm/newCore/FundValuationLast?FCODES=${encodeURIComponent(chunk.join(','))}&FIELDS=${encodeURIComponent(FUND_VALUATION_LAST_FIELDS)}`;
+        // 边缘代理命中时走 10s TTL + stale-while-revalidate 的共享缓存；未部署代理则直连
+        const proxyUrl = edgeProxyUrl('/valuation', { codes: chunk.join(',') });
+        fundDebugLog('processFundValuationLastQueue', { count: chunk.length, codes: chunk, edge: Boolean(proxyUrl) });
+        let res;
+        try {
+          res = await fetch(proxyUrl || directUrl, { signal: controller.signal });
+        } catch (edgeErr) {
+          if (!proxyUrl) throw edgeErr;
+          markEdgeProxyDown();
+          res = await fetch(directUrl, { signal: controller.signal });
+        }
+        if (proxyUrl && (res.status === 404 || res.status === 405)) {
+          markEdgeProxyDown();
+          res = await fetch(directUrl, { signal: controller.signal });
+        }
         clearTimeout(timer);
         if (!res.ok) throw new Error(`FundValuationLast HTTP ${res.status}`);
         const json = await res.json();
@@ -1077,42 +1092,58 @@ function fetchSinaEstimateNetworthResponse(code) {
   const existing = sinaEstimateNetworthInflight.get(c);
   if (existing) return existing;
 
-  const p = new Promise((resolve, reject) => {
-    fundDebugLog('fetchSinaEstimateNetworth start', { code: c });
-    const callbackName = `jsonp_sina_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-    const url = `https://stock.finance.sina.com.cn/fundInfo/api/openapi.php/FdFundService.getEstimateNetworthPic?symbol=${c}&callback=${callbackName}`;
+  const loadViaJsonp = () =>
+    new Promise((resolve, reject) => {
+      fundDebugLog('fetchSinaEstimateNetworth jsonp', { code: c });
+      const callbackName = `jsonp_sina_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      const url = `https://stock.finance.sina.com.cn/fundInfo/api/openapi.php/FdFundService.getEstimateNetworthPic?symbol=${c}&callback=${callbackName}`;
 
-    const scriptSina = document.createElement('script');
-    let timer;
+      const scriptSina = document.createElement('script');
+      let timer;
 
-    const cleanupScript = () => {
-      if (timer) clearTimeout(timer);
+      const cleanupScript = () => {
+        if (timer) clearTimeout(timer);
+        try {
+          delete window[callbackName];
+        } catch (e) {}
+        if (document.body && document.body.contains(scriptSina)) {
+          document.body.removeChild(scriptSina);
+        }
+      };
+
+      window[callbackName] = (res) => {
+        cleanupScript();
+        resolve(res);
+      };
+
+      timer = setTimeout(() => {
+        cleanupScript();
+        resolve(null);
+      }, 10000);
+
+      scriptSina.src = url;
+      scriptSina.async = true;
+      scriptSina.onerror = () => {
+        cleanupScript();
+        reject(new Error('sina script error'));
+      };
+      document.body.appendChild(scriptSina);
+    });
+
+  const p = (async () => {
+    // 边缘代理已部署时用 fetch（可被缓存、避免 JSONP 脚本注入），失败则回退 JSONP
+    const proxyUrl = edgeProxyUrl('/sina', { code: c });
+    if (proxyUrl) {
       try {
-        delete window[callbackName];
-      } catch (e) {}
-      if (document.body && document.body.contains(scriptSina)) {
-        document.body.removeChild(scriptSina);
+        const res = await withTimeout(fetch(proxyUrl, { cache: 'no-store' }), 6000, 'sina proxy timeout');
+        if (res.ok) return await res.json();
+        if (res.status === 404 || res.status === 405) markEdgeProxyDown();
+      } catch (e) {
+        markEdgeProxyDown();
       }
-    };
-
-    window[callbackName] = (res) => {
-      cleanupScript();
-      resolve(res);
-    };
-
-    timer = setTimeout(() => {
-      cleanupScript();
-      resolve(null);
-    }, 10000);
-
-    scriptSina.src = url;
-    scriptSina.async = true;
-    scriptSina.onerror = () => {
-      cleanupScript();
-      reject(new Error('sina script error'));
-    };
-    document.body.appendChild(scriptSina);
-  }).finally(() => {
+    }
+    return loadViaJsonp();
+  })().finally(() => {
     sinaEstimateNetworthInflight.delete(c);
   });
 
@@ -1377,6 +1408,90 @@ export async function fetchFundValuationBySource(code, dataSource = 1) {
   return fetchFundValuationLastBatched(c);
 }
 
+const FAST_SOURCE_TIMEOUT_MS = 3500;
+const ALTERNATE_SOURCE_TIMEOUT_MS = 4000;
+
+/**
+ * 估值源尝试顺序：首选源在前，其余源作为兜底（未配置 Supabase 时跳过源 4）。
+ * @param {number|string} preferredSource
+ * @returns {number[]}
+ */
+export function getValuationSourceOrder(preferredSource) {
+  const primary = normalizeValuationDataSource(preferredSource);
+  const rest = [1, 2, 3, 4].filter((id) => id !== primary && (id !== 4 || isSupabaseConfigured));
+  return [primary, ...rest];
+}
+
+/**
+ * 批量读取最新单位净值（含净值日期与名称）。
+ * 新浪/QDII 等估值源不携带单位净值，用它补齐 dwjz/jzrq，避免为大文件 pingzhongdata 阻塞首屏。
+ * @param {string[]} codes
+ * @returns {Promise<Record<string, { dwjz: string|null, jzrq: string|null, name?: string }>>}
+ */
+export const fetchNavQuoteBatch = async (codes) => {
+  const list = isArray(codes) ? Array.from(new Set(codes.map((c) => String(c || '').trim()).filter(Boolean))) : [];
+  const out = {};
+  if (list.length === 0) return out;
+  await Promise.all(
+    list.map(async (code) => {
+      try {
+        const v = await fetchFundValuationLastBatched(code);
+        if (!v) return;
+        out[code] = {
+          dwjz: v.dwjz != null ? String(v.dwjz) : null,
+          jzrq: v.jzrq != null ? String(v.jzrq) : null,
+          name: v.name
+        };
+      } catch (e) {}
+    })
+  );
+  return out;
+};
+
+async function tryValuationSource(code, id) {
+  const timeoutMs = id === 1 ? FAST_SOURCE_TIMEOUT_MS : ALTERNATE_SOURCE_TIMEOUT_MS;
+  const data = await withTimeout(fetchFundValuationBySource(code, id), timeoutMs, `估值源 ${id} 超时`);
+  if (!data) throw new Error(`估值源 ${id} 无数据`);
+  reportSourceSuccess(id);
+  return data;
+}
+
+/**
+ * 带容灾的估值获取：首选源失败（或处于失败冷却期）时并发尝试其余数据源，先返回者胜出。
+ * 返回值额外带 fallbackFrom，表示本次发生了降级切换。
+ * @param {string} code
+ * @param {number|string} [preferredSource=1]
+ * @returns {Promise<object>}
+ */
+export async function fetchFastValuation(code, preferredSource = 1) {
+  const c = code != null ? String(code).trim() : '';
+  if (!c) throw new Error('基金编码无效');
+  const [primary, ...alternates] = getValuationSourceOrder(preferredSource);
+
+  if (!isSourceCoolingDown(primary)) {
+    try {
+      return await tryValuationSource(c, primary);
+    } catch (e) {
+      reportSourceFailure(primary, e);
+      fundDebugLog('primary valuation source failed', { code: c, primary, error: e?.message });
+    }
+  }
+
+  if (alternates.length === 0) throw new Error('无可用估值数据源');
+  const attempts = alternates.map((id) =>
+    tryValuationSource(c, id).catch((err) => {
+      reportSourceFailure(id, err);
+      throw err;
+    })
+  );
+  try {
+    const winner = await Promise.any(attempts);
+    return { ...winner, fallbackFrom: primary };
+  } catch (e) {
+    throw new Error('所有估值数据源均不可用');
+  }
+}
+
 /**
  * 获取基金申赎确认天数（SSBCFMDATA）
  * 通过天天基金移动端 API FundMNBaseInfo 获取。
@@ -1413,6 +1528,8 @@ export const fetchFundConfirmDays = async (code) => {
   }
 };
 
+// 估值链路不等待 pingzhongdata（单文件约 570KB，脚本解析会阻塞主线程）：
+// 估值源自带净值时直接返回；新浪/QDII 等不带净值的源用批量接口补齐。
 export const fetchFundData = async (c, overrideDataSource) => {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     throw new Error('无浏览器环境');
@@ -1438,75 +1555,66 @@ export const fetchFundData = async (c, overrideDataSource) => {
     } catch (e) {}
   }
 
-  // F10DataApi.aspx 已失效，直接使用 pingzhongdata 获取历史净值指标
-  const lsjzPromise = fetchNavMetricsFromTrendFallback(code);
+  // 估值走多源容灾；全部估值源失败时才回退到 pingzhongdata 兜底链路
+  let baseData = null;
+  try {
+    baseData = await fetchFastValuation(code, dataSource);
+  } catch (e) {
+    baseData = await fetchFundDataFallback(code);
+  }
 
-  // 2. 发起估值请求
-  const gzPromise = fetchFundValuationBySource(code, dataSource);
+  let tData = null;
+  if (!baseData.dwjz) {
+    // 新浪/QDII 等估值源不带单位净值，用批量接口补齐（50 只/请求），不加载 pingzhongdata
+    const navMap = await fetchNavQuoteBatch([code]);
+    tData = navMap[code] || null;
+  }
 
-  // 3. 编排并合并数据
-  return new Promise(async (resolve, reject) => {
-    let baseData = null;
-    try {
-      baseData = await gzPromise;
-    } catch (e) {
+  if (tData) {
+    if (tData.jzrq && (!baseData.jzrq || tData.jzrq >= baseData.jzrq)) {
+      baseData.dwjz = tData.dwjz;
+      baseData.jzrq = tData.jzrq;
+      if (tData.zzl !== undefined) baseData.zzl = tData.zzl;
+      if (tData.lastNav !== undefined) baseData.lastNav = tData.lastNav;
+    } else if (!baseData.dwjz && tData.dwjz) {
+      // Fallback for Sina which doesn't provide dwjz/jzrq
+      baseData.dwjz = tData.dwjz;
+      baseData.jzrq = tData.jzrq;
+      if (tData.zzl !== undefined) baseData.zzl = tData.zzl;
+      if (tData.lastNav !== undefined) baseData.lastNav = tData.lastNav;
+    }
+    if (Object.prototype.hasOwnProperty.call(tData, 'yesterdayZzl')) {
+      baseData.yesterdayZzl = tData.yesterdayZzl;
+    }
+    if (Object.prototype.hasOwnProperty.call(tData, 'yesterdayNavDelta')) {
+      baseData.yesterdayNavDelta = tData.yesterdayNavDelta;
+    }
+    if (!baseData.name && tData.name) baseData.name = tData.name;
+  }
+
+  // 针对 supabase_qdii 等仅提供 gszzl 的数据源，使用最新的 dwjz 计算 gsz
+  if (baseData.valuationSource === 'supabase_qdii' || (baseData.gsz == null && baseData.gszzl != null)) {
+    const nav = Number(baseData.dwjz);
+    const gszzl = Number(baseData.gszzl);
+    if (Number.isFinite(nav) && Number.isFinite(gszzl)) {
+      baseData.gsz = nav * (1 + gszzl / 100);
+    }
+  }
+
+  if (!baseData.name) {
+    // 优先使用 localStorage 中已存储的基金名称，避免不必要的 searchFunds 网络请求
+    if (storedName) {
+      baseData.name = storedName;
+    } else {
       try {
-        baseData = await fetchFundDataFallback(code);
-      } catch (fbErr) {
-        reject(fbErr);
-        return;
-      }
+        const results = await searchFunds(code);
+        const found = results.find((item) => item.CODE === code);
+        if (found) baseData.name = found.NAME || found.SHORTNAME;
+      } catch (e) {}
     }
+  }
 
-    const [tData] = await Promise.all([lsjzPromise]);
-
-    if (tData) {
-      if (tData.jzrq && (!baseData.jzrq || tData.jzrq >= baseData.jzrq)) {
-        baseData.dwjz = tData.dwjz;
-        baseData.jzrq = tData.jzrq;
-        baseData.zzl = tData.zzl;
-        baseData.lastNav = tData.lastNav;
-      } else if (!baseData.dwjz && tData.dwjz) {
-        // Fallback for Sina which doesn't provide dwjz/jzrq
-        baseData.dwjz = tData.dwjz;
-        baseData.jzrq = tData.jzrq;
-        baseData.zzl = tData.zzl;
-        baseData.lastNav = tData.lastNav;
-      }
-      if (Object.prototype.hasOwnProperty.call(tData, 'yesterdayZzl')) {
-        baseData.yesterdayZzl = tData.yesterdayZzl;
-      }
-      if (Object.prototype.hasOwnProperty.call(tData, 'yesterdayNavDelta')) {
-        baseData.yesterdayNavDelta = tData.yesterdayNavDelta;
-      }
-    }
-
-    // 针对 supabase_qdii 等仅提供 gszzl 的数据源，使用最新的 dwjz 计算 gsz
-    if (baseData.valuationSource === 'supabase_qdii' || (baseData.gsz == null && baseData.gszzl != null)) {
-      const nav = Number(baseData.dwjz);
-      const gszzl = Number(baseData.gszzl);
-      if (Number.isFinite(nav) && Number.isFinite(gszzl)) {
-        baseData.gsz = nav * (1 + gszzl / 100);
-      }
-    }
-
-    if (!baseData.name) {
-      // 优先使用 localStorage 中已存储的基金名称，避免不必要的 searchFunds 网络请求
-      if (storedName) {
-        baseData.name = storedName;
-      } else {
-        try {
-          const results = await searchFunds(code);
-          const found = results.find((item) => item.CODE === code);
-          if (found) baseData.name = found.NAME || found.SHORTNAME;
-        } catch (e) {}
-      }
-    }
-
-    resolve({
-      ...baseData
-    });
-  });
+  return { ...baseData };
 };
 
 export const fetchFundHoldings = async (code) => {
@@ -2065,7 +2173,9 @@ const jsonpLoadPingzhongdata = (fundCode, timeoutMs = 20000) => {
       return;
     }
 
-    const url = `https://fund.eastmoney.com/pingzhongdata/${fundCode}.js?v=${Date.now()}`;
+    // 按小时分桶：同一小时内重复打开页面可命中浏览器缓存（ETag 协商），又不会拿到跨小时前的旧净值
+    const hourBucket = Math.floor(Date.now() / (60 * 60 * 1000));
+    const url = `https://fund.eastmoney.com/pingzhongdata/${fundCode}.js?v=${hourBucket}`;
     const script = document.createElement('script');
     script.src = url;
     script.async = true;
